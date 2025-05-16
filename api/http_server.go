@@ -13,8 +13,12 @@ import (
 )
 
 type HTTPHandler struct {
-	hClient   HHClient
-	cfg       env.Config
+	hClient    HHClient
+	cfg        env.Config
+	clientData ClientData
+}
+
+type ClientData struct {
 	Vacancies []Vacancy
 	IdResume  string
 }
@@ -63,10 +67,12 @@ func (h *HTTPHandler) callback(c *gin.Context) {
 
 func (h *HTTPHandler) authorization(c *gin.Context) {
 	chatId := c.Query("chat_id")
+	userName := c.Query("user_name")
 	authURL := fmt.Sprintf("https://hh.ru/oauth/authorize?response_type=code&client_id=%s&redirect_uri=%s",
 		h.hClient.clientId, "http://localhost:8081/auth/callback")
 
-	h.hClient.ChatId = chatId
+	h.hClient.botUserData.ChatId = chatId
+	h.hClient.botUserData.UserName = userName
 	c.JSON(http.StatusOK, gin.H{"message": authURL})
 
 }
@@ -74,7 +80,7 @@ func (h *HTTPHandler) authorization(c *gin.Context) {
 func (h *HTTPHandler) refreshAccess(c *gin.Context) {
 	resp, err := h.hClient.client.R().SetQueryParams(map[string]string{
 		"grant_type":     "authorization_code",
-		"refresh_token ": h.hClient.userData.RefreshToken,
+		"refresh_token ": h.hClient.authData.RefreshToken,
 		"client_id":      h.hClient.clientId,
 		"client_secret":  h.hClient.secretKey,
 	}).Post("https://api.hh.ru/token")
@@ -99,18 +105,26 @@ func (h *HTTPHandler) response(c *gin.Context) {
 		return
 	}
 
-	for _, vacancy := range h.Vacancies {
-		go func() {
-			err := h.hClient.ResponceVacancy(resumeId, vacancy.ID)
-			if err != nil {
-				err = fmt.Errorf("error responding to vacancy %s : %s", vacancy.ID, err)
-				c.JSON(http.StatusBadRequest, gin.H{"error": err})
-				return
-			}
-		}()
+	length := 40 //len(h.clientData.Vacancies)
+	if length > len(h.clientData.Vacancies) {
+		length = len(h.clientData.Vacancies)
 	}
 
-	c.JSON(http.StatusOK, gin.H{"message": fmt.Sprintf("successfully fetched %d Vacancy", len(h.Vacancies))})
+	var err error
+	for i := 0; i < length; i++ {
+		vacancy := h.clientData.Vacancies[i]
+		err = h.hClient.ResponseVacancy(resumeId, vacancy.ID)
+		if err != nil {
+			err = fmt.Errorf("error responding to vacancy %s : %s", vacancy.ID, err)
+		}
+	}
+
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+
+	c.JSON(http.StatusOK, gin.H{"message": fmt.Sprintf("successfully fetched %d Vacancy", len(h.clientData.Vacancies))})
 }
 
 func (h *HTTPHandler) searchVacancies(c *gin.Context) {
@@ -122,14 +136,14 @@ func (h *HTTPHandler) searchVacancies(c *gin.Context) {
 		return
 	}
 
-	if h.hClient.userData.RefreshToken != "" && h.hClient.userData.AccessToken != "" {
+	if h.hClient.authData.RefreshToken != "" && h.hClient.authData.AccessToken != "" {
 		sortedVacancies, err := h.checkIfResponded(vacancies)
 		if err != nil {
 			c.JSON(http.StatusBadRequest, gin.H{"message": err})
 			return
 		}
-		h.Vacancies = sortedVacancies
-		log.Printf("vacancies have been sent %v", len(h.Vacancies))
+		h.clientData.Vacancies = sortedVacancies
+		log.Printf("vacancies have been sent %v", len(h.clientData.Vacancies))
 		c.JSON(http.StatusOK, gin.H{"result": sortedVacancies})
 		return
 	}
@@ -184,7 +198,7 @@ func getDetail(client *HHClient, jobs <-chan Vacancy, result chan<- Detail) {
 
 func (h *HTTPHandler) checkIfResponded(vacancies []Vacancy) ([]Vacancy, error) {
 	resp, err := h.hClient.client.R().
-		SetHeader("Authorization", "Bearer "+h.hClient.userData.AccessToken).
+		SetHeader("Authorization", "Bearer "+h.hClient.authData.AccessToken).
 		Get("https://api.hh.ru/negotiations")
 
 	if err != nil {
@@ -202,7 +216,7 @@ func (h *HTTPHandler) checkIfResponded(vacancies []Vacancy) ([]Vacancy, error) {
 
 	sortedVacancies := make([]Vacancy, 0)
 	for _, vacancy := range vacancies {
-		if !compareVacancy(vacancy.ID, result.Items) {
+		if vacancy.ID != "" && !compareVacancy(vacancy.ID, result.Items) {
 			sortedVacancies = append(sortedVacancies, vacancy)
 		}
 	}

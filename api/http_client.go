@@ -8,11 +8,19 @@ import (
 )
 
 type HHClient struct {
-	client    *resty.Client
-	clientId  string
-	secretKey string
-	userData  TokenResponse
-	ChatId    string
+	client      *resty.Client
+	clientId    string
+	secretKey   string
+	authData    TokenResponse
+	botUserData BotUserData
+}
+
+type BotUserData struct {
+	ChatId   string `json:"chat_id"`
+	UserName string `json:"user_id"`
+}
+
+type AuthorizationData struct {
 }
 
 func NewClient(cfg env.Config) *HHClient {
@@ -50,10 +58,11 @@ func (c *HHClient) SearchVacancies(text string) ([]Vacancy, error) {
 func (c *HHClient) getPageVacancies(text string, page int) (*VacancyResponse, error) {
 	resp, err := c.client.R().
 		SetQueryParams(map[string]string{
-			"text":     "name:" + text,
-			"archived": "false",
-			"page":     fmt.Sprint(page),
-			"per_page": "100",
+			"text":       "name:" + text,
+			"archived":   "false",
+			"page":       fmt.Sprint(page),
+			"per_page":   "100",
+			"experience": "between1And3",
 		}).Get("https://api.hh.ru/vacancies")
 
 	if err != nil {
@@ -106,11 +115,11 @@ func (c *HHClient) Authorization(authCode string) error {
 		return fmt.Errorf("api call failed: %w", fmt.Errorf("access_token is empty"))
 	}
 
-	c.userData = detail
+	c.authData = detail
 	return nil
 }
 
-func (c *HHClient) ResponceVacancy(idResume string, idVacancy string) error {
+func (c *HHClient) ResponseVacancy(idResume string, idVacancy string) error {
 	detail, err := c.GetVacancyDetail(idVacancy)
 
 	if err != nil {
@@ -119,7 +128,7 @@ func (c *HHClient) ResponceVacancy(idResume string, idVacancy string) error {
 	fmt.Println(detail)
 
 	c.client.SetHeader("User-Agent", "JobSearch/0.1 (dof312@gmail.com)")
-	resp, err := c.client.R().SetHeader("Authorization", "Bearer "+c.userData.AccessToken).
+	resp, err := c.client.R().SetHeader("Authorization", "Bearer "+c.authData.AccessToken).
 		SetQueryParams(map[string]string{
 			"vacancy_id": idVacancy,
 			"resume_id":  idResume,
@@ -146,7 +155,7 @@ func (c *HHClient) SendResumeToBot() error {
 
 	_, err = c.client.R().SetQueryParams(map[string]string{
 		"resumes": string(resumesBody),
-		"chat_id": c.ChatId,
+		"chat_id": c.botUserData.ChatId,
 	}).Post("http://localhost:8080/bot/callback")
 
 	if err != nil {
@@ -158,7 +167,7 @@ func (c *HHClient) SendResumeToBot() error {
 
 func (c *HHClient) GetResumes() ([]Resume, error) {
 	resp, err := c.client.R().
-		SetHeader("Authorization", "Bearer "+c.userData.AccessToken).
+		SetHeader("Authorization", "Bearer "+c.authData.AccessToken).
 		Get("https://api.hh.ru/resumes/mine")
 
 	if err != nil {
